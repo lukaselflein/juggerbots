@@ -10,6 +10,7 @@ import json
 import os
 import time
 import pandas as pd
+import tabulate
 
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
@@ -19,16 +20,48 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 logger = logging.getLogger(__name__)
 
+def save_table(df):
+    filename = './data/scores.csv'
+    df.to_csv(filename)
 
-# A dataframe that goes like
-# Date PersonA PersonB PointsA PointsB
-# 10.5 Max     Lu      10      8
-sparring_df = pd.DataFrame(columns=['time', 'person_a', 'person_b', 
-                                        'points_a', 'points_b']) 
+def init_table():
+
+    # make sure data folder exists
+    if not os.path.exists('./data/'):
+        os.mkdir('./data/')
+
+    # check if df for scores already exists
+    filename = './data/scores.csv'
+    if os.path.exists(filename):
+        sparring_df = pd.read_csv(filename)
+        return sparring_df
+
+    else:
+        # Initiate a dataframe like
+        # Date        person_a person_b points_a points_b
+        # 2020-10-..3 Max      Lu       10       8
+        # ....
+        sparring_df = pd.DataFrame(columns=['time', 'person_a', 'person_b', 
+                                                'points_a', 'points_b']) 
+        save_table(sparring_df)
+        return sparring_df
+
+sparring_df = init_table()
 
 
-# Define a few command handlers. These usually take the two arguments update and
-# context. Error handlers also receive the raised TelegramError object in error.
+
+def delete_table():
+    filename = './data/scores.csv'
+    os.rename(filename, filename + '_bk_' + str(time.time()))
+
+
+def clear(update, context):
+    delete_table()
+    global sparring_df
+    sparring_df = init_table()
+    update.message.reply_text('Deleted all entries.')
+
+
 def start(update, context):
     """Send a message when the command /start is issued."""
     update.message.reply_text('Hi Rigor!')
@@ -40,7 +73,7 @@ def help(update, context):
 
 
 def parse(update, context):
-    """Parse text for commands."""
+    """Parse text input, extract names and points."""
     global sparring_df
 
     text = update.message.text.lower()
@@ -65,33 +98,82 @@ def parse(update, context):
                     update.message.reply_text(f'Bad score format: {score}')
                     return
 
-    new_row = {'time': pd.Timestamp.now(), 'person_a':words[0], 'person_b': words[1], 
-               'points_a': points[0], 'points_b': points[1]}
-    print(new_row)
+    # e.g., Ludo Günther 10 6
+    if len(words) == 4:
+        points = [words[2], words[3]]
+
+    print(words, points)
+
+    # convert points to int
+    try:
+        points[0], points[1] = int(points[0]), int(points[1])
+    except:
+        update.message.reply_text(f'Bad score format: {score}')
+
+    # Leave everything if ordered
+    if words[0] < words[1]:
+        first_person = words[0]
+        first_score = points[0]
+        second_person = words[1]
+        second_score = points[1]
+
+    # Swap scores and persons if not alphabetically ordered
+    elif words[0] > words[1]:
+        first_person = words[1]
+        first_score = points[1]
+        second_person = words[0]
+        second_score = points[0]
+    
+    else:
+        raise(ValueError, f'Persons must be different')
+
+    new_row = {'time': pd.Timestamp.now(), 
+               'person_a': first_person, 'person_b': second_person, 
+               'points_a': first_score, 'points_b': second_score}
 
     sparring_df = sparring_df.append(new_row, ignore_index=True)
+    save_table(sparring_df)
 
-
-    update.message.reply_text(f'added {words[0]} {words[1]} {points[0]}:{points[1]}')
+    update.message.reply_text(f'added {first_person} {second_person} {first_score}:{second_score}')
 
 
 def stats(update, context):
     text = update.message.text.lower()
     words = text.split(' ')
+    print(words)
     # Command is just /stats
     if len(words) == 1:
         update.message.reply_text(f'{str(sparring_df)}')
 
+    # Command is like /stats lu
     elif len(words) == 2:
-        matches = sparring_df[sparring_df.person_a == words[1]]
-        output = matches[['person_a', 'person_b', 'points_a', 'points_b']]
-        # TODO: append cases where search name is second pos
-        update.message.reply_text(f'{str(matches)}')
+        matches = sparring_df[(sparring_df.person_a == words[1]) | (sparring_df.person_b == words[1])]
 
+    # Command is like /stats lu max
     elif len(words) == 3:
-        matches = sparring_df[sparring_df.person_a == words[1]]
-        matches = matches[sparring_df.person_b == words[2]]
-        update.message.reply_text(f'{str(matches)}')
+        # todo a != b
+        filtered_1 = sparring_df[(sparring_df.person_a == words[1]) | (sparring_df.person_a == words[1])]
+        matches = filtered_1[(sparring_df.person_a == words[2]) | (sparring_df.person_b == words[2])]
+
+    # Malformed command like '/stats a b c' or double spaces
+    else:
+        update.message.reply_text(f'Could not parse {text}.')
+        return
+        
+    output = matches.groupby(['person_a', 'person_b']).agg('sum')
+    output['ratio'] = round(100 * output.points_a / (output.points_b + output.points_a), 0)
+    output = output.reset_index()
+
+
+    # Output formatting
+    max_len_a = output.person_a.map(lambda x: len(x)).max()
+    asci_table = ''
+    for index, row in output.iterrows():
+        asci_table += f'{row.person_a}:{row.person_b}\t {row.points_a}:{row.points_b}\t {int(row.ratio)}%\n'
+        
+
+    update.message.reply_text(f'{asci_table}')
+    return
 
 
 def read_secrets(path=None, token_name='pompfbot_token'):
@@ -123,7 +205,9 @@ def main():
     # on different commands - answer in Telegram
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("stats", stats))
+    dp.add_handler(CommandHandler("s", stats))
     dp.add_handler(CommandHandler("help", help))
+    dp.add_handler(CommandHandler("clear", clear))
 
     # on noncommand i.e message - echo the message on Telegram
     dp.add_handler(MessageHandler(Filters.text, parse))
