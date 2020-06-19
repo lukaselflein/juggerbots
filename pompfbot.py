@@ -10,7 +10,6 @@ import json
 import os
 import time
 import pandas as pd
-import tabulate
 
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
