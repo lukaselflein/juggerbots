@@ -7,59 +7,19 @@ Telegram bot for keeping the scores in a jugger team.
 
 import logging
 import json 
-import os
 import time
+import os
+import re
 import pandas as pd
 
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
+import telegram
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 
 logger = logging.getLogger(__name__)
-
-def save_table(df):
-    filename = './data/scores.csv'
-    df.to_csv(filename)
-
-def init_table():
-
-    # make sure data folder exists
-    if not os.path.exists('./data/'):
-        os.mkdir('./data/')
-
-    # check if df for scores already exists
-    filename = './data/scores.csv'
-    if os.path.exists(filename):
-        sparring_df = pd.read_csv(filename)
-        return sparring_df
-
-    else:
-        # Initiate a dataframe like
-        # Date        person_a person_b points_a points_b
-        # 2020-10-..3 Max      Lu       10       8
-        # ....
-        sparring_df = pd.DataFrame(columns=['time', 'person_a', 'person_b', 
-                                                'points_a', 'points_b']) 
-        save_table(sparring_df)
-        return sparring_df
-
-sparring_df = init_table()
-
-
-
-def delete_table():
-    filename = './data/scores.csv'
-    os.rename(filename, filename + '_bk_' + str(time.time()))
-
-
-def clear(update, context):
-    delete_table()
-    global sparring_df
-    sparring_df = init_table()
-    update.message.reply_text('Deleted all entries.')
-
 
 def start(update, context):
     """Send a message when the command /start is issued."""
@@ -71,28 +31,28 @@ def help(update, context):
     update.message.reply_text('Help!')
 
 
-def parse(update, context):
-    """Parse text input, extract names and points."""
-    global sparring_df
+def handle_data(text, update, context):
+    """Extract names and scores from telegram input."""
 
-    text = update.message.text.lower()
-    if text is None:
-        update.message.reply_text('Empty Message.')
+    # eliminate double spaces
+    clean_text = re.sub('\s+', ' ', text)
 
-    words = text.split(' ')
-    # e.g., Ludo Günther 10-6
-    if len(words) > 2:
+    words = clean_text.split(' ')
+    # e.g., "Ludo Günther"
+    if len(words) >= 2:
         names = [words[0], words[1]]
+        # Check if names are unique, no self-matches possible
+        if names[0] == names[1]:
+            update.message.reply_text(f'Names must be unequal: "{text}"')
+            return
 
-    # e.g., Ludo Günther 10-6
+    # e.g., Ludo Günther 5-10
     if len(words) == 3:
         score = words[2]
         # allow more score formats like 5/10, 5:10
         for seperator in ['-', ':', '/']:
             if seperator in score:
-                print(seperator, ' in ', score)
                 points = score.split(seperator)
-                print(points)
                 if len(points) != 2:
                     update.message.reply_text(f'Bad score format: {score}')
                     return
@@ -101,74 +61,146 @@ def parse(update, context):
     if len(words) == 4:
         points = [words[2], words[3]]
 
-    print(words, points)
-
-    # convert points to int
+    # validate that the score consists of natural numbers
     try:
         points[0], points[1] = int(points[0]), int(points[1])
     except:
-        update.message.reply_text(f'Bad score format: {score}')
+        update.message.reply_text(f'Bad score format: {points}')
+        return
 
-    # Leave everything if ordered
-    if words[0] < words[1]:
-        first_person = words[0]
-        first_score = points[0]
-        second_person = words[1]
-        second_score = points[1]
+    player_points, opponent_points = points[0], points[1]
+    player_name, opponent_name = names[0], names[1]
+    # Add a new data row like
+    # 2020-20-6 max lu 4 10
+    data = [[pd.Timestamp.now(), player_name, opponent_name, 
+             player_points, opponent_points]]
+    # Append a duplicate where player and opponent are swapped, for easier filtering, like
+    # 2020-20-6 lu max 10 4
+    data += [[pd.Timestamp.now(), opponent_name, player_name, 
+              opponent_points, player_points]]
 
-    # Swap scores and persons if not alphabetically ordered
-    elif words[0] > words[1]:
-        first_person = words[1]
-        first_score = points[1]
-        second_person = words[0]
-        second_score = points[0]
-    
+    columns = ['time', 'player', 'opponent', 'player_points', 'opponent_points']
+    df = pd.DataFrame(data, columns=columns)
+    return df
+
+
+def parse(update, context):
+    """Parse text input, extract names and points."""
+
+    text = update.message.text.lower()
+    if text is None:
+        update.message.reply_text('Error: Empty Message.')
+        return
+
+    # Sanity checks against overflows
+    message_maxlen = 25000  # 1000 lines a 25 chars
+    line_maxlen = 30  # names: 20 chars, + 5 chars for result
+    if len(text) > message_maxlen:
+        update.message.reply_text('Error: Message longer than {message_maxlen}.')
+        return
+
+    # Split the message into lines by
+    lines = text.split('\n')
+    for line in lines:
+        if len(line) > line_maxlen:
+            update.message.reply_text(f'Error: Line longer than {line_maxlen}.')
+            return
+
+        # Do the actual processing     
+        df = handle_data(line, update, context)
+
+        # Only use output if no error was encountered
+        if df is not None:
+            data = save_entry(df)
+
+    return
+
+
+def save_entry(df, path='./data/scores.csv'):
+    """Append pandas dataframe to csv at rest."""
+
+    # Load old data
+    rest_data = read_db(path=path, update=None, context=None)
+
+    if rest_data is not None:
+        # If we have old data on disk, append the new data
+        new_data = pd.concat([rest_data, df], ignore_index=True)
     else:
-        raise(ValueError, f'Persons must be different')
+        # Otherwise, the new stuff is all we have 
+        new_data = df
 
-    new_row = {'time': pd.Timestamp.now(), 
-               'person_a': first_person, 'person_b': second_person, 
-               'points_a': first_score, 'points_b': second_score}
+    new_data.to_csv(path, index=False)
+    return new_data
 
-    sparring_df = sparring_df.append(new_row, ignore_index=True)
-    save_table(sparring_df)
 
-    update.message.reply_text(f'added {first_person} {second_person} {first_score}:{second_score}')
+def read_db(update=None, context=None, path='./data/scores.csv'):
+    """Output the currently stored data as pandas dataframe"""
+    try:
+        # Check if we already have a file
+        rest_data = pd.read_csv(path)
+    except:
+        rest_data = None
+    return rest_data
 
+
+def delete_db(update=None, context=None, path='./data/scores.csv'):
+    """Backup & delete the database."""
+    backup_path = path + '_bk_' + str(int(time.time()))
+    os.rename(path, backup_path)
+    update.message.reply_text('All scores deleted.')
+
+
+def push_db():
+    """Push the local database to the online google docs sheet."""
+
+
+def pull_db():
+    """Get the most recent version of the google docs table."""
 
 def stats(update, context):
+    """Output aggregated statistics"""
+    # Parse & clean
     text = update.message.text.lower()
+    clean_text = re.sub('\s+', ' ', text)
     words = text.split(' ')
-    print(words)
-    # Command is just /stats
+
+    data = read_db()
+    if data is None:
+        update.message.reply_text(f'No data on disk.')
+        return
+
+    # Command is just "/stats"
     if len(words) == 1:
-        update.message.reply_text(f'{str(sparring_df)}')
+        filtered_data = data
 
-    # Command is like /stats lu
+    # Command is like "/stats max"
     elif len(words) == 2:
-        matches = sparring_df[(sparring_df.person_a == words[1]) | (sparring_df.person_b == words[1])]
+        player = words[1]
+        filtered_data = data[data.player == player]
 
-    # Command is like /stats lu max
+    # Command is like "/stats lu max"
     elif len(words) == 3:
-        # todo a != b
-        filtered_1 = sparring_df[(sparring_df.person_a == words[1]) | (sparring_df.person_a == words[1])]
-        matches = filtered_1[(sparring_df.person_a == words[2]) | (sparring_df.person_b == words[2])]
+        player, opponent = words[1], words[2]
+        player_filtered_data = data[data.player == player]
+        filtered_data = player_filtered_data[data.opponent == opponent]
 
     # Malformed command like '/stats a b c' or double spaces
     else:
-        update.message.reply_text(f'Could not parse {text}.')
+        update.message.reply_text(f'Invalid command: \n"{text}".')
         return
         
-    output = matches.groupby(['person_a', 'person_b']).agg('sum')
-    output['ratio'] = round(100 * output.points_a / (output.points_b + output.points_a), 0)
+    output = filtered_data.groupby(['player', 'opponent']).agg('sum')
+    output['ratio'] = round(100 * output.player_points 
+                            / (output.player_points + output.opponent_points),
+                            0)
     output = output.reset_index()
 
-
     # Output formatting
-    max_len_a = output.person_a.map(lambda x: len(x)).max()
     asci_table = ''
     for index, row in output.iterrows():
-        asci_table += f'{row.person_a}:{row.person_b}\t {row.points_a}:{row.points_b}\t {int(row.ratio)}%\n'
+        asci_table += f'{row.player:10}{row.opponent:10}' 
+        asci_table += f'{row.player_points:2}:{row.opponent_points:2}'
+        asci_table += f' \t{int(row.ratio)}%\n'
         
 
     update.message.reply_text(f'{asci_table}')
@@ -206,7 +238,8 @@ def main():
     dp.add_handler(CommandHandler("stats", stats))
     dp.add_handler(CommandHandler("s", stats))
     dp.add_handler(CommandHandler("help", help))
-    dp.add_handler(CommandHandler("clear", clear))
+    dp.add_handler(CommandHandler("clear", delete_db))
+    dp.add_handler(CommandHandler("delete", delete_db))
 
     # on noncommand i.e message - echo the message on Telegram
     dp.add_handler(MessageHandler(Filters.text, parse))
