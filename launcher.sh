@@ -6,4 +6,5 @@ sleep 5
 
 __dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd ${__dir}
-python3 pompfbot.py & 
+python3 pompfbot.py --keyname pompfbot_token & 
+python3 pompfbot.py --keyname falco_pompfbot_token & 
