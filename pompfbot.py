@@ -37,7 +37,12 @@ def start(update, context):
 
 def help(update, context):
     """Send a message when the command /help is issued."""
-    update.message.reply_text('Help!')
+    text = 'Usage:/n'
+    text += 'lu linus 9 10 - add a new duel score'
+    text += '/stats - all aggregate statistics'
+    text += '/stats lu - Lu\'s statistics'
+    text += '/stats lu linus - Lu-vs-Linus statistics'
+    update.message.reply_text(text)
 
 
 def handle_data(text, update, context):
