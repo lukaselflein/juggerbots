@@ -238,8 +238,6 @@ def main():
     keyname = parse_cli()
     
     token = read_secrets(path='./secrets.json', token_name=keyname)
-    print(token)
-    exit()
 
     # Create the Updater and pass it your bot's token.
     updater = Updater(token, use_context=True)
