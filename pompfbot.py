@@ -5,6 +5,7 @@
 Telegram bot for keeping the scores in a jugger team.
 """
 
+import argparse
 import logging
 import json 
 import time
@@ -20,6 +21,14 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
                     level=logging.INFO)
 
 logger = logging.getLogger(__name__)
+
+
+def parse_cli():
+    parser = argparse.ArgumentParser(description='Run a telegram bot for keeping stats.')
+    parser.add_argument('--keyname', default='pompfbot_token',
+                        help='Name of the secret API key for the bot')
+    args = parser.parse_args()
+    return args.keyname
 
 def start(update, context):
     """Send a message when the command /start is issued."""
@@ -225,7 +234,12 @@ def error(update, context):
 
 def main():
     """Start the bot."""
-    token = read_secrets(path='./secrets.json')
+
+    keyname = parse_cli()
+    
+    token = read_secrets(path='./secrets.json', token_name=keyname)
+    print(token)
+    exit()
 
     # Create the Updater and pass it your bot's token.
     updater = Updater(token, use_context=True)
