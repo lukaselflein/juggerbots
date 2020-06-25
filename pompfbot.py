@@ -95,12 +95,12 @@ def handle_data(text, update, context):
     player_name, opponent_name = names[0], names[1]
     # Add a new data row like
     # 2020-20-6 max lu 4 10
-    data = [[time.time(), player_name, opponent_name, 
-             player_points, opponent_points]]
+    data = [[str(int(time.time())), player_name, opponent_name, 
+             str(player_points), str(opponent_points)]]
     # Append a duplicate where player and opponent are swapped, for easier filtering, like
     # 2020-20-6 lu max 10 4
-    data += [[pd.Timestamp.now(), opponent_name, player_name, 
-              opponent_points, player_points]]
+    data += [[str(int(time.time())), opponent_name, player_name, 
+              str(opponent_points), str(player_points)]]
 
     columns = ['time', 'player', 'opponent', 'player_points', 'opponent_points']
     df = pd.DataFrame(data, columns=columns)
@@ -144,55 +144,23 @@ def save_entry(update, context, df, path='./data/scores.csv'):
 
     google_sheet = context.bot_data['google_sheet']
 
-    if google_sheet is None:
-        # Load old data
-        rest_data = read_db(path=path, update=None, context=None)
-
-        if rest_data is not None:
-            # If we have old data on disk, append the new data
-            new_data = pd.concat([rest_data, df], ignore_index=True)
-        else:
-            # Otherwise, the new stuff is all we have 
-            new_data = df
-
-        new_data.to_csv(path, index=False)
-
-    else:
-        google_sheet.append(df.values)
-
-    return new_data
+    google_sheet.append(df.values.tolist())
 
 
-def read_db(update=None, context=None, path='./data/scores.csv'):
+def read_db(update, context, path='./data/scores.csv'):
     """Output the currently stored data as pandas dataframe"""
 
     google_sheet = context.bot_data['google_sheet']
-    # Local fallback
-    if google_sheet is None:
-        try:
-            # Check if we already have a file
-            data = pd.read_csv(path)
-        except:
-            data = None
     # Google sheets database
-    else:
-        data = google_sheet.read()
-    return data
+    data = google_sheet.read()
+    # Transform list to pandas DataFrame
+    df  = pd.DataFrame(data[1:], columns=data[0]) 
+    # Cast points from str to int
+    df.player_points = df.player_points.astype('int32')
+    df.opponent_points = df.opponent_points.astype('int32')
 
+    return df
 
-def delete_db(update=None, context=None, path='./data/scores.csv'):
-    """Backup & delete the database."""
-    backup_path = path + '_bk_' + str(int(time.time()))
-    os.rename(path, backup_path)
-    update.message.reply_text('All scores deleted.')
-
-
-def push_db():
-    """Push the local database to the online google docs sheet."""
-
-
-def pull_db():
-    """Get the most recent version of the google docs table."""
 
 def stats(update, context):
     """Output aggregated statistics"""
@@ -201,7 +169,7 @@ def stats(update, context):
     clean_text = re.sub('\s+', ' ', text)
     words = text.split(' ')
 
-    data = read_db()
+    data = read_db(update, context)  # Google api returns list
     if data is None:
         update.message.reply_text(f'No data on disk.')
         return
@@ -261,7 +229,10 @@ def error(update, context):
 
 
 class GoogleSheet:
-    """A google spreadsheet."""
+    """A google spreadsheet.
+    The content is treated as a list of lists.
+    Casting to pandas dataframes happens outside."""
+
     def __init__(self, sheet_id, sheet_range):
         """Handle login and default parameters."""
         creds = self.auth()
@@ -305,15 +276,7 @@ class GoogleSheet:
         return values
 
 
-    def write(self, values=None):
-        if values is None:
-            values = [
-                ['Datetime', 'Player', 'Opponent', 'Player Score', 'Opponent Score'],
-                ['1', 'lu', 'max', '10', '4'],
-                ['2', 'lu', 'max', '9', '10'],
-                ['3', 'test', 'test2', '1', '2'],
-                ['4', 'test2', 'test', '2', '1']
-            ]
+    def write(self, values):
         body = { 'values': values}
         result = self.sheet.values().update(spreadsheetId=self.sheet_id,
                                        range=self.sheet_range,
@@ -322,15 +285,16 @@ class GoogleSheet:
         print(f'{result.get("updatedCells")} cells updated')
 
 
-    def append(self, values=None):
+    def append(self, values):
         print(values)
-        exit()
-        if values is None:
-            values = [['10', 'appended', 'a2', '1', '3']]
-            values += [['10', 'a2', 'appended', '3', '1']]
         initial_values = self.read()
+        print(initial_values)
+        print()
         # Append to the old data:
         new_values = initial_values + values
+#        new_values = initial_values + [['1593085418', 'a', 'b', '1', '2'], 
+#                                       ['1593085640', 'b', 'a', '2', '1']]
+        print(new_values)
         self.write(values=new_values)
     
 
@@ -355,8 +319,6 @@ def main():
     dp.add_handler(CommandHandler("stats", stats))
     dp.add_handler(CommandHandler("s", stats))
     dp.add_handler(CommandHandler("help", help))
-    dp.add_handler(CommandHandler("clear", delete_db))
-    dp.add_handler(CommandHandler("delete", delete_db))
 
     # on noncommand i.e message - echo the message on Telegram
     dp.add_handler(MessageHandler(Filters.text, parse))
